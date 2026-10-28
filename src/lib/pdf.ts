@@ -1,7 +1,6 @@
 import jsPDF from 'jspdf';
 import {
   InvoiceData,
-  LineItem,
   calculate,
   formatMoney,
   niceDate,

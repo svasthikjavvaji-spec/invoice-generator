@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import { useState, useMemo, useRef, useCallback } from 'react';
 import {
   Plus,
   Trash2,
@@ -20,7 +20,6 @@ import {
   Save,
   Coins,
   Percent,
-  ShieldCheck,
 } from 'lucide-react';
 import {
   InvoiceData,
@@ -29,9 +28,7 @@ import {
   makeId,
   calculate,
   formatMoney,
-  todayISO,
   addDaysISO,
-  niceDate,
   lineNetCents,
   fromCents,
   parsePct,
@@ -40,7 +37,6 @@ import {
   fileToDataUrl,
   readableTextOn,
   CURRENCIES,
-  DEFAULT_TAX_RATE,
   defaultInvoice,
   suggestInvoiceNumber,
   loadSavedInvoices,
@@ -77,7 +73,7 @@ export default function InvoiceGenerator() {
 
   const data: InvoiceData = invoice;
 
-  const calc = useMemo(() => calculate(data), [items, discountPct, taxRate]);
+  const calc = useMemo(() => calculate(invoice), [invoice]);
 
   const money = useCallback((v: number) => formatMoney(v, currency), [currency]);
 
