@@ -59,12 +59,11 @@ export const CURRENCIES: Currency[] = [
 
 export const DEFAULT_TAX_RATE = '20';
 export const STORAGE_KEY = 'invoice-generator:drafts';
-export const SETTINGS_KEY = 'invoice-generator:settings';
 
 /** Convert a user-typed number to integer cents to avoid floating-point drift. */
 export function toCents(value: string | number): number {
   const n = typeof value === 'number' ? value : parseFloat(value);
-  if (isNaN(n) || !isFinite(n)) return 0;
+  if (isNaN(n) || !isFinite(n) || n < 0) return 0;
   return Math.round(n * 100);
 }
 
@@ -161,17 +160,18 @@ export function lineTaxCents(it: LineItem, taxRate: string): number {
 
 /**
  * Full invoice calculation using integer-cent arithmetic.
- * Subtotal = sum of gross line totals (before any discounts).
+ * Subtotal = sum of net line totals (after per-item discounts).
  * Discount = invoice-level discount applied to the subtotal.
  * Tax = sum of per-item tax (items can be exempt, each taxed on its own net).
+ * The invoice-level discount reduces the taxable base proportionally.
  */
 export function calculate(data: Pick<InvoiceData, 'items' | 'discountPct' | 'taxRate'>): CalcResult {
   let subtotalC = 0;
   let taxC = 0;
 
   for (const it of data.items) {
-    const gross = lineTotalCents(it);
-    subtotalC += gross;
+    const net = lineNetCents(it);
+    subtotalC += net;
     taxC += lineTaxCents(it, data.taxRate);
   }
 
@@ -179,8 +179,6 @@ export function calculate(data: Pick<InvoiceData, 'items' | 'discountPct' | 'tax
   const discountC = Math.round((subtotalC * invDiscount) / 100);
   const netC = subtotalC - discountC;
 
-  // Tax is computed per-item on each item's net (after item discount).
-  // Invoice-level discount reduces the overall taxable base proportionally.
   const discountRatio = subtotalC > 0 ? netC / subtotalC : 1;
   const adjustedTaxC = Math.round(taxC * discountRatio);
 
@@ -263,19 +261,34 @@ export type SavedInvoice = {
   data: InvoiceData;
 };
 
+function isValidSavedInvoice(entry: unknown): entry is SavedInvoice {
+  if (typeof entry !== 'object' || entry === null) return false;
+  const e = entry as Record<string, unknown>;
+  return (
+    typeof e.id === 'string' &&
+    typeof e.invoiceNumber === 'string' &&
+    typeof e.updatedAt === 'number' &&
+    typeof e.data === 'object' &&
+    e.data !== null &&
+    Array.isArray((e.data as Record<string, unknown>).items)
+  );
+}
+
 export function loadSavedInvoices(): SavedInvoice[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.sort((a: SavedInvoice, b: SavedInvoice) => b.updatedAt - a.updatedAt);
+    return parsed
+      .filter(isValidSavedInvoice)
+      .sort((a: SavedInvoice, b: SavedInvoice) => b.updatedAt - a.updatedAt);
   } catch {
     return [];
   }
 }
 
-export function saveInvoiceToStorage(data: InvoiceData): void {
+export function saveInvoiceToStorage(data: InvoiceData): boolean {
   const calc = calculate(data);
   const entry: SavedInvoice = {
     id: data.id,
@@ -290,8 +303,9 @@ export function saveInvoiceToStorage(data: InvoiceData): void {
   all.push(entry);
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+    return true;
   } catch {
-    // storage full or unavailable — silently fail
+    return false;
   }
 }
 

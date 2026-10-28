@@ -63,6 +63,8 @@ export default function InvoiceGenerator() {
   const [savedFlash, setSavedFlash] = useState(false);
   const [showPreviewMobile, setShowPreviewMobile] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState(false);
+  const [pdfError, setPdfError] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Pull fields out for convenience
@@ -146,10 +148,16 @@ export default function InvoiceGenerator() {
   }
 
   function handleSave() {
-    saveInvoiceToStorage(invoice);
+    const ok = saveInvoiceToStorage(invoice);
     refreshSaved();
-    setSavedFlash(true);
-    window.setTimeout(() => setSavedFlash(false), 2500);
+    if (ok) {
+      setSavedFlash(true);
+      window.setTimeout(() => setSavedFlash(false), 2500);
+    } else {
+      setLogoError(null);
+      setSaveError(true);
+      window.setTimeout(() => setSaveError(false), 4000);
+    }
   }
 
   function handleNew() {
@@ -191,9 +199,14 @@ export default function InvoiceGenerator() {
   /* ---------- PDF ---------- */
   function downloadPDF() {
     if (validation.length > 0) return;
-    generateInvoicePdf(data, `${invoiceNumber || 'invoice'}.pdf`);
-    setDownloaded(true);
-    window.setTimeout(() => setDownloaded(false), 3500);
+    try {
+      generateInvoicePdf(data, `${invoiceNumber || 'invoice'}.pdf`);
+      setDownloaded(true);
+      window.setTimeout(() => setDownloaded(false), 3500);
+    } catch {
+      setPdfError(true);
+      window.setTimeout(() => setPdfError(false), 5000);
+    }
   }
 
   // Sync due date when payment terms preset changes (7/14/30 days)
@@ -580,6 +593,12 @@ export default function InvoiceGenerator() {
               )}
               {savedFlash && (
                 <p className="text-center text-sm text-emerald-300">Draft saved to this browser.</p>
+              )}
+              {saveError && (
+                <p className="text-center text-sm text-red-400">Could not save — browser storage may be full or unavailable.</p>
+              )}
+              {pdfError && (
+                <p className="text-center text-sm text-red-400">Could not generate the PDF. Please try again, or remove the logo if the issue persists.</p>
               )}
             </div>
           </div>
