@@ -427,7 +427,7 @@ export default function InvoiceGenerator() {
               <div className="hidden items-center gap-2 px-2 pb-2 text-xs font-medium uppercase tracking-wider text-white/40 lg:flex">
                 <div className="flex-1">Item Name</div>
                 <div className="w-16 text-center">Qty</div>
-                <div className="w-24 text-right">Price</div>
+                <div className="w-24 text-right">Unit Price</div>
                 <div className="w-16 text-right">Disc %</div>
                 <div className="w-20 text-right">Amount</div>
                 <div className="w-8"></div>
@@ -445,6 +445,7 @@ export default function InvoiceGenerator() {
                       {/* Row: flex layout that works on all breakpoints */}
                       <div className="flex flex-wrap items-center gap-2">
                         <div className="order-1 w-full lg:w-auto lg:flex-1">
+                          <span className="mb-1 block text-[10px] font-medium uppercase tracking-wider text-white/30 lg:hidden">Item Name</span>
                           <input
                             value={it.name}
                             onChange={(e) => updateItem(it.id, 'name', e.target.value)}
@@ -453,6 +454,7 @@ export default function InvoiceGenerator() {
                           />
                         </div>
                         <div className="order-2 w-16">
+                          <span className="mb-1 block text-[10px] font-medium uppercase tracking-wider text-white/30 lg:hidden">Qty</span>
                           <input
                             value={it.quantity}
                             onChange={(e) => updateItem(it.id, 'quantity', e.target.value)}
@@ -464,6 +466,7 @@ export default function InvoiceGenerator() {
                           />
                         </div>
                         <div className="order-3 w-24">
+                          <span className="mb-1 block text-[10px] font-medium uppercase tracking-wider text-white/30 lg:hidden">Unit Price</span>
                           <input
                             value={it.price}
                             onChange={(e) => updateItem(it.id, 'price', e.target.value)}
@@ -475,6 +478,7 @@ export default function InvoiceGenerator() {
                           />
                         </div>
                         <div className="order-4 w-16">
+                          <span className="mb-1 block text-[10px] font-medium uppercase tracking-wider text-white/30 lg:hidden">Disc %</span>
                           <input
                             value={it.discountPct}
                             onChange={(e) => updateItem(it.id, 'discountPct', String(clampPct(parseFloat(e.target.value) || 0)))}
@@ -485,10 +489,11 @@ export default function InvoiceGenerator() {
                             className="w-full rounded-lg bg-transparent px-2 py-2 text-right text-sm text-white placeholder-white/30 outline-none focus:bg-white/5"
                           />
                         </div>
-                        <div className="order-5 w-20 flex items-center justify-end text-sm font-medium text-white/70">
-                          {money(net)}
+                        <div className="order-5 w-20 flex flex-col justify-end">
+                          <span className="mb-1 block text-[10px] font-medium uppercase tracking-wider text-white/30 lg:hidden">Amount</span>
+                          <span className="py-2 text-right text-sm font-medium text-white/70">{money(net)}</span>
                         </div>
-                        <div className="order-6 w-8 flex justify-end">
+                        <div className="order-6 w-8 flex items-end justify-end">
                           <button
                             onClick={() => removeItem(it.id)}
                             disabled={items.length === 1}
