@@ -1,10 +1,22 @@
-import { InvoiceData, calculate, formatGBP, niceDate, lineTotal, readableTextOn } from '@/lib/invoice';
-import { FileText } from 'lucide-react';
+import {
+  InvoiceData,
+  calculate,
+  formatMoney,
+  niceDate,
+  lineNetCents,
+  fromCents,
+  parsePct,
+  readableTextOn,
+} from '@/lib/invoice';
+import { FileText, Calendar } from 'lucide-react';
 
 export default function InvoicePreview({ data }: { data: InvoiceData }) {
   const calc = calculate(data);
+  const cur = data.currency || 'GBP';
   const accentText = readableTextOn(data.accentColor);
   const accentStyle = { backgroundColor: data.accentColor, color: accentText };
+
+  const money = (v: number) => formatMoney(v, cur);
 
   const senderLines = [data.sender.name, data.sender.email, data.sender.address].filter(Boolean);
   const clientLines = [data.client.name, data.client.email, data.client.address].filter(Boolean);
@@ -16,11 +28,7 @@ export default function InvoicePreview({ data }: { data: InvoiceData }) {
       <div className="flex items-center justify-between px-6 py-5 sm:px-8 sm:py-6" style={accentStyle}>
         <div className="flex items-center gap-3">
           {data.logoDataUrl ? (
-            <img
-              src={data.logoDataUrl}
-              alt="Company logo"
-              className="max-h-10 max-w-[160px] object-contain"
-            />
+            <img src={data.logoDataUrl} alt="Company logo" className="max-h-10 max-w-[160px] object-contain" />
           ) : (
             <span className="text-xl font-bold tracking-tight sm:text-2xl">INVOICE</span>
           )}
@@ -55,32 +63,53 @@ export default function InvoicePreview({ data }: { data: InvoiceData }) {
         </div>
       </div>
 
+      {/* Due date */}
+      {data.dueDate && (
+        <div className="flex items-center gap-1.5 px-6 pt-4 text-xs text-gray-500 sm:px-8">
+          <Calendar className="h-3 w-3" />
+          <span>Due {niceDate(data.dueDate)}</span>
+        </div>
+      )}
+
       {/* Items */}
-      <div className="px-6 pt-6 sm:px-8">
+      <div className="px-6 pt-4 sm:px-8">
         <table className="w-full border-collapse text-left">
           <thead>
             <tr style={accentStyle}>
               <th className="rounded-l px-3 py-2 text-[10px] font-bold uppercase tracking-wider">Description</th>
-              <th className="px-3 py-2 text-right text-[10px] font-bold uppercase tracking-wider">Qty</th>
-              <th className="px-3 py-2 text-right text-[10px] font-bold uppercase tracking-wider">Price</th>
-              <th className="rounded-r px-3 py-2 text-right text-[10px] font-bold uppercase tracking-wider">Amount</th>
+              <th className="px-2 py-2 text-right text-[10px] font-bold uppercase tracking-wider">Qty</th>
+              <th className="px-2 py-2 text-right text-[10px] font-bold uppercase tracking-wider">Price</th>
+              <th className="px-2 py-2 text-right text-[10px] font-bold uppercase tracking-wider hidden sm:table-cell">Disc</th>
+              <th className="rounded-r px-2 py-2 text-right text-[10px] font-bold uppercase tracking-wider">Amount</th>
             </tr>
           </thead>
           <tbody>
             {hasItems ? (
-              data.items.map((it, idx) => (
-                <tr key={it.id} className={idx % 2 === 1 ? 'bg-gray-50' : ''}>
-                  <td className="border-b border-gray-100 px-3 py-2 text-xs sm:text-sm break-words">
-                    {it.name || <span className="text-gray-300">Untitled item</span>}
-                  </td>
-                  <td className="border-b border-gray-100 px-3 py-2 text-right text-xs sm:text-sm">{it.quantity || '0'}</td>
-                  <td className="border-b border-gray-100 px-3 py-2 text-right text-xs sm:text-sm">{formatGBP(parseFloat(it.price) || 0)}</td>
-                  <td className="border-b border-gray-100 px-3 py-2 text-right text-xs font-medium sm:text-sm">{formatGBP(lineTotal(it))}</td>
-                </tr>
-              ))
+              data.items.map((it, idx) => {
+                const itemDisc = parsePct(it.discountPct);
+                const net = fromCents(lineNetCents(it));
+                return (
+                  <tr key={it.id} className={idx % 2 === 1 ? 'bg-gray-50' : ''}>
+                    <td className="border-b border-gray-100 px-3 py-2 text-xs sm:text-sm break-words">
+                      {it.name || <span className="text-gray-300">Untitled item</span>}
+                      {it.taxExempt && (
+                        <span className="ml-1.5 rounded bg-gray-100 px-1 py-0.5 text-[9px] uppercase tracking-wide text-gray-400">
+                          tax-exempt
+                        </span>
+                      )}
+                    </td>
+                    <td className="border-b border-gray-100 px-2 py-2 text-right text-xs sm:text-sm">{it.quantity || '0'}</td>
+                    <td className="border-b border-gray-100 px-2 py-2 text-right text-xs sm:text-sm">{money(parseFloat(it.price) || 0)}</td>
+                    <td className="border-b border-gray-100 px-2 py-2 text-right text-xs text-gray-400 hidden sm:table-cell">
+                      {itemDisc > 0 ? itemDisc + '%' : '—'}
+                    </td>
+                    <td className="border-b border-gray-100 px-2 py-2 text-right text-xs font-medium sm:text-sm">{money(net)}</td>
+                  </tr>
+                );
+              })
             ) : (
               <tr>
-                <td colSpan={4} className="px-3 py-6 text-center text-xs text-gray-300">
+                <td colSpan={5} className="px-3 py-6 text-center text-xs text-gray-300">
                   No line items yet
                 </td>
               </tr>
@@ -91,24 +120,24 @@ export default function InvoicePreview({ data }: { data: InvoiceData }) {
 
       {/* Totals */}
       <div className="flex justify-end px-6 pb-4 pt-4 sm:px-8">
-        <div className="w-full max-w-[260px] space-y-2">
+        <div className="w-full max-w-[280px] space-y-2">
           <div className="flex justify-between text-xs sm:text-sm">
             <span className="text-gray-500">Subtotal</span>
-            <span className="font-medium">{formatGBP(calc.subtotal)}</span>
+            <span className="font-medium">{money(calc.subtotal)}</span>
           </div>
           {calc.discountAmount > 0 && (
             <div className="flex justify-between text-xs sm:text-sm">
               <span className="text-gray-500">Discount ({data.discountPct || 0}%)</span>
-              <span className="font-medium">-{formatGBP(calc.discountAmount)}</span>
+              <span className="font-medium">-{money(calc.discountAmount)}</span>
             </div>
           )}
           <div className="flex justify-between text-xs sm:text-sm">
-            <span className="text-gray-500">VAT (20%)</span>
-            <span className="font-medium">{formatGBP(calc.vat)}</span>
+            <span className="text-gray-500">Tax ({data.taxRate || 0}%)</span>
+            <span className="font-medium">{money(calc.tax)}</span>
           </div>
           <div className="mt-1 flex items-center justify-between rounded-lg px-3 py-2.5" style={accentStyle}>
             <span className="text-sm font-bold">Total Due</span>
-            <span className="text-base font-bold">{formatGBP(calc.total)}</span>
+            <span className="text-base font-bold">{money(calc.total)}</span>
           </div>
         </div>
       </div>

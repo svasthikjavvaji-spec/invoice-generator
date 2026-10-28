@@ -1,11 +1,13 @@
 import jsPDF from 'jspdf';
 import {
   InvoiceData,
-  CalcResult,
+  LineItem,
   calculate,
-  formatGBP,
+  formatMoney,
   niceDate,
-  lineTotal,
+  lineNetCents,
+  fromCents,
+  parsePct,
   hexToRgb,
   readableTextOn,
 } from '@/lib/invoice';
@@ -23,6 +25,7 @@ export function generateInvoicePdf(data: InvoiceData, filename: string): jsPDF {
 
   const accent: Rgb = hexToRgb(data.accentColor);
   const calc = calculate(data);
+  const cur = data.currency || 'GBP';
 
   let y = PAGE_MARGIN;
 
@@ -46,12 +49,15 @@ export function generateInvoicePdf(data: InvoiceData, filename: string): jsPDF {
     doc.text('Generated with Invoice Generator', pageW / 2, pageH - 22, { align: 'center' });
   }
 
+  function money(v: number): string {
+    return formatMoney(v, cur);
+  }
+
   /* ---------- Header ---------- */
   const headerH = 96;
   doc.setFillColor(accent.r, accent.g, accent.b);
   doc.rect(0, 0, pageW, headerH, 'F');
 
-  // Logo or INVOICE title
   let logoDrawn = false;
   if (data.logoDataUrl) {
     try {
@@ -122,13 +128,25 @@ export function generateInvoicePdf(data: InvoiceData, filename: string): jsPDF {
       rowY2 += 15;
     });
   });
-  y = Math.max(rowY, rowY2) + 24;
+  y = Math.max(rowY, rowY2) + 20;
+
+  /* ---------- Dates row ---------- */
+  if (data.dueDate) {
+    doc.setFont(FONT, 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(120, 120, 120);
+    doc.text('Due Date: ' + niceDate(data.dueDate), PAGE_MARGIN, y);
+    y += 18;
+  }
+
+  y += 6;
 
   /* ---------- Items table ---------- */
   const headerH2 = 26;
   const nameX = PAGE_MARGIN + 10;
-  const qtyX = PAGE_MARGIN + contentW * 0.56;
-  const priceX = PAGE_MARGIN + contentW * 0.74;
+  const qtyX = PAGE_MARGIN + contentW * 0.46;
+  const priceX = PAGE_MARGIN + contentW * 0.62;
+  const discX = PAGE_MARGIN + contentW * 0.76;
   const totalX = PAGE_MARGIN + contentW - 10;
 
   ensureSpace(headerH2 + 24);
@@ -142,6 +160,7 @@ export function generateInvoicePdf(data: InvoiceData, filename: string): jsPDF {
   doc.text('DESCRIPTION', nameX, y + 17);
   doc.text('QTY', qtyX, y + 17);
   doc.text('PRICE', priceX, y + 17, { align: 'right' });
+  doc.text('DISC', discX, y + 17, { align: 'right' });
   doc.text('AMOUNT', totalX, y + 17, { align: 'right' });
   y += headerH2;
 
@@ -149,10 +168,13 @@ export function generateInvoicePdf(data: InvoiceData, filename: string): jsPDF {
   doc.setFont(FONT, 'normal');
   doc.setFontSize(10);
   doc.setTextColor(40, 40, 40);
+
   data.items.forEach((it, idx) => {
     const label = it.name || 'Item';
     const qty = it.quantity || '0';
     const price = parseFloat(it.price) || 0;
+    const itemDisc = parsePct(it.discountPct);
+    const netAmount = fromCents(lineNetCents(it));
     const wrapped = doc.splitTextToSize(label, qtyX - nameX - 12);
     const rowH = Math.max(24, wrapped.length * 14 + 10);
 
@@ -168,12 +190,22 @@ export function generateInvoicePdf(data: InvoiceData, filename: string): jsPDF {
       doc.text(l, nameX, textY);
       textY += 14;
     });
+
+    // tax-exempt tag below description
+    if (it.taxExempt) {
+      doc.setFontSize(7);
+      doc.setTextColor(120, 120, 120);
+      doc.text('tax-exempt', nameX, textY - 2);
+      doc.setFontSize(10);
+      doc.setTextColor(40, 40, 40);
+    }
+
     const midY = y + rowH / 2 + 4;
     doc.text(qty, qtyX, midY);
-    doc.text(formatGBP(price), priceX, midY, { align: 'right' });
-    doc.text(formatGBP(lineTotal(it)), totalX, midY, { align: 'right' });
+    doc.text(money(price), priceX, midY, { align: 'right' });
+    doc.text(itemDisc > 0 ? itemDisc + '%' : '—', discX, midY, { align: 'right' });
+    doc.text(money(netAmount), totalX, midY, { align: 'right' });
 
-    // row separator
     doc.setDrawColor(232, 232, 232);
     doc.line(PAGE_MARGIN, y + rowH, PAGE_MARGIN + contentW, y + rowH);
 
@@ -181,10 +213,10 @@ export function generateInvoicePdf(data: InvoiceData, filename: string): jsPDF {
   });
 
   y += 14;
-  ensureSpace(120);
+  ensureSpace(140);
 
   /* ---------- Totals ---------- */
-  const totalsW = 240;
+  const totalsW = 260;
   const totalsX = PAGE_MARGIN + contentW - totalsW;
   const valueX = PAGE_MARGIN + contentW;
   const rowGap = 21;
@@ -193,21 +225,22 @@ export function generateInvoicePdf(data: InvoiceData, filename: string): jsPDF {
   doc.setTextColor(90, 90, 90);
   doc.text('Subtotal', totalsX, y);
   doc.setTextColor(30, 30, 30);
-  doc.text(formatGBP(calc.subtotal), valueX, y, { align: 'right' });
+  doc.text(money(calc.subtotal), valueX, y, { align: 'right' });
   y += rowGap;
 
   if (calc.discountAmount > 0) {
     doc.setTextColor(90, 90, 90);
     doc.text(`Discount (${data.discountPct || 0}%)`, totalsX, y);
     doc.setTextColor(30, 30, 30);
-    doc.text('-' + formatGBP(calc.discountAmount), valueX, y, { align: 'right' });
+    doc.text('-' + money(calc.discountAmount), valueX, y, { align: 'right' });
     y += rowGap;
   }
 
+  const taxLabel = `Tax (${data.taxRate || 0}%)`;
   doc.setTextColor(90, 90, 90);
-  doc.text('VAT (20%)', totalsX, y);
+  doc.text(taxLabel, totalsX, y);
   doc.setTextColor(30, 30, 30);
-  doc.text(formatGBP(calc.vat), valueX, y, { align: 'right' });
+  doc.text(money(calc.tax), valueX, y, { align: 'right' });
   y += rowGap;
 
   // Total row
@@ -218,7 +251,7 @@ export function generateInvoicePdf(data: InvoiceData, filename: string): jsPDF {
   doc.setFont(FONT, 'bold');
   doc.setFontSize(13);
   doc.text('TOTAL DUE', totalsX, y + 4);
-  doc.text(formatGBP(calc.total), valueX, y + 4, { align: 'right' });
+  doc.text(money(calc.total), valueX, y + 4, { align: 'right' });
   y += 52;
 
   /* ---------- Footer note ---------- */
@@ -246,7 +279,7 @@ export function generateInvoicePdf(data: InvoiceData, filename: string): jsPDF {
 function imageFormat(dataUrl: string): 'PNG' | 'JPEG' | null {
   if (dataUrl.startsWith('data:image/png')) return 'PNG';
   if (dataUrl.startsWith('data:image/jpeg') || dataUrl.startsWith('data:image/jpg')) return 'JPEG';
-  if (dataUrl.startsWith('data:image/webp')) return 'PNG'; // jsPDF treats webp as png-ish; may fail
+  if (dataUrl.startsWith('data:image/webp')) return 'PNG';
   if (dataUrl.startsWith('data:image/gif')) return 'PNG';
   return null;
 }
@@ -264,7 +297,6 @@ function fitImage(
     imgW = props.width;
     imgH = props.height;
   } catch {
-    // fall back to a conservative default
     const w = Math.min(maxW, 180);
     const h = Math.min(maxH, 56);
     return { w, h };

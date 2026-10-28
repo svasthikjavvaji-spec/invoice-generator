@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import {
   Plus,
   Trash2,
@@ -17,6 +17,10 @@ import {
   AlertCircle,
   X,
   Eye,
+  Save,
+  Coins,
+  Percent,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   InvoiceData,
@@ -24,72 +28,96 @@ import {
   emptyItem,
   makeId,
   calculate,
-  formatGBP,
+  formatMoney,
   todayISO,
-  lineTotal,
+  addDaysISO,
+  niceDate,
+  lineNetCents,
+  fromCents,
+  parsePct,
   clampPct,
   validateLogo,
   fileToDataUrl,
   readableTextOn,
+  CURRENCIES,
+  DEFAULT_TAX_RATE,
+  defaultInvoice,
+  suggestInvoiceNumber,
+  loadSavedInvoices,
+  saveInvoiceToStorage,
+  deleteInvoiceFromStorage,
+  SavedInvoice,
 } from '@/lib/invoice';
 import { generateInvoicePdf } from '@/lib/pdf';
 import InvoicePreview from '@/components/InvoicePreview';
+import SavedInvoices, { ConfirmDialog } from '@/components/SavedInvoices';
 
 const ACCENT_PRESETS = ['#10b981', '#0ea5e9', '#f59e0b', '#ef4444', '#6366f1', '#111827'];
 
 export default function InvoiceGenerator() {
-  const [sender, setSender] = useState({ name: '', email: '', address: '' });
-  const [client, setClient] = useState({ name: '', email: '', address: '' });
-  const [invoiceNumber, setInvoiceNumber] = useState('INV-0001');
-  const [invoiceDate, setInvoiceDate] = useState(todayISO());
-  const [paymentTerms, setPaymentTerms] = useState(
-    'Payment due within 14 days. Thank you for your business.'
-  );
-  const [discountPct, setDiscountPct] = useState('0');
-  const [accentColor, setAccentColor] = useState('#10b981');
-  const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
+  const [invoice, setInvoice] = useState<InvoiceData>(() => {
+    const saved = loadSavedInvoices();
+    const fresh = defaultInvoice();
+    fresh.invoiceNumber = suggestInvoiceNumber(saved) || fresh.invoiceNumber;
+    return fresh;
+  });
+  const [saved, setSaved] = useState<SavedInvoice[]>(() => loadSavedInvoices());
   const [logoError, setLogoError] = useState<string | null>(null);
-  const [items, setItems] = useState<LineItem[]>([
-    { id: makeId(), name: '', quantity: '1', price: '0' },
-    { id: makeId(), name: '', quantity: '1', price: '0' },
-  ]);
   const [downloaded, setDownloaded] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
   const [showPreviewMobile, setShowPreviewMobile] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const data: InvoiceData = {
-    sender,
-    client,
-    invoiceNumber,
-    invoiceDate,
-    paymentTerms,
-    items,
-    discountPct,
-    accentColor,
-    logoDataUrl,
-  };
+  // Pull fields out for convenience
+  const {
+    sender, client, invoiceNumber, invoiceDate, dueDate, paymentTerms,
+    items, discountPct, taxRate, currency, accentColor, logoDataUrl,
+  } = invoice;
 
-  const calc = useMemo(() => calculate(data), [items, discountPct]);
+  const data: InvoiceData = invoice;
+
+  const calc = useMemo(() => calculate(data), [items, discountPct, taxRate]);
+
+  const money = useCallback((v: number) => formatMoney(v, currency), [currency]);
 
   const validation = useMemo(() => {
     const errors: string[] = [];
     if (!sender.name.trim()) errors.push('Add a sender name.');
     if (!client.name.trim()) errors.push('Add a client name.');
+    if (!invoiceNumber.trim()) errors.push('Add an invoice number.');
     const hasAnyItem = items.some((it) => it.name.trim() && (parseFloat(it.price) || 0) > 0);
     if (!hasAnyItem) errors.push('Add at least one item with a name and price.');
     return errors;
-  }, [sender.name, client.name, items]);
+  }, [sender.name, client.name, invoiceNumber, items]);
 
-  function updateItem(id: string, field: keyof Omit<LineItem, 'id'>, value: string) {
-    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, [field]: value } : it)));
+  /* ---------- Field updaters ---------- */
+  function patch<K extends keyof InvoiceData>(key: K, value: InvoiceData[K]) {
+    setInvoice((prev) => ({ ...prev, [key]: value }));
+  }
+  function patchSender(field: keyof InvoiceData['sender'], value: string) {
+    setInvoice((prev) => ({ ...prev, sender: { ...prev.sender, [field]: value } }));
+  }
+  function patchClient(field: keyof InvoiceData['client'], value: string) {
+    setInvoice((prev) => ({ ...prev, client: { ...prev.client, [field]: value } }));
+  }
+
+  function updateItem(id: string, field: keyof Omit<LineItem, 'id'>, value: string | boolean) {
+    setInvoice((prev) => ({
+      ...prev,
+      items: prev.items.map((it) => (it.id === id ? { ...it, [field]: value } : it)),
+    }));
   }
 
   function addItem() {
-    setItems((prev) => [...prev, emptyItem()]);
+    setInvoice((prev) => ({ ...prev, items: [...prev.items, emptyItem()] }));
   }
 
   function removeItem(id: string) {
-    setItems((prev) => (prev.length > 1 ? prev.filter((it) => it.id !== id) : prev));
+    setInvoice((prev) => ({
+      ...prev,
+      items: prev.items.length > 1 ? prev.items.filter((it) => it.id !== id) : prev.items,
+    }));
   }
 
   async function handleLogoChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -104,7 +132,7 @@ export default function InvoiceGenerator() {
     }
     try {
       const url = await fileToDataUrl(file);
-      setLogoDataUrl(url);
+      patch('logoDataUrl', url);
     } catch {
       setLogoError('Could not read that file. Please try a different image.');
     }
@@ -112,15 +140,76 @@ export default function InvoiceGenerator() {
   }
 
   function removeLogo() {
-    setLogoDataUrl(null);
+    patch('logoDataUrl', null);
     setLogoError(null);
   }
 
+  /* ---------- Persistence ---------- */
+  function refreshSaved() {
+    setSaved(loadSavedInvoices());
+  }
+
+  function handleSave() {
+    saveInvoiceToStorage(invoice);
+    refreshSaved();
+    setSavedFlash(true);
+    window.setTimeout(() => setSavedFlash(false), 2500);
+  }
+
+  function handleNew() {
+    const fresh = defaultInvoice();
+    fresh.invoiceNumber = suggestInvoiceNumber(saved) || fresh.invoiceNumber;
+    setInvoice(fresh);
+    setShowPreviewMobile(false);
+  }
+
+  function handleOpen(id: string) {
+    const found = saved.find((s) => s.id === id);
+    if (!found) return;
+    setInvoice(found.data);
+    setShowPreviewMobile(false);
+  }
+
+  function handleDuplicate(id: string) {
+    const found = saved.find((s) => s.id === id);
+    if (!found) return;
+    const copy: InvoiceData = {
+      ...found.data,
+      id: makeId(),
+      invoiceNumber: suggestInvoiceNumber(saved),
+      updatedAt: Date.now(),
+    };
+    setInvoice(copy);
+  }
+
+  function handleDelete(id: string) {
+    deleteInvoiceFromStorage(id);
+    refreshSaved();
+    setConfirmDelete(null);
+    // If we deleted the active invoice, start fresh
+    if (id === invoice.id) {
+      handleNew();
+    }
+  }
+
+  /* ---------- PDF ---------- */
   function downloadPDF() {
     if (validation.length > 0) return;
     generateInvoicePdf(data, `${invoiceNumber || 'invoice'}.pdf`);
     setDownloaded(true);
     window.setTimeout(() => setDownloaded(false), 3500);
+  }
+
+  // Sync due date when payment terms preset changes (7/14/30 days)
+  function applyTermsPreset(preset: string) {
+    patch('paymentTerms', preset);
+    const dayMatch = preset.match(/(\d+)\s*days?/i);
+    if (dayMatch) {
+      const days = parseInt(dayMatch[1], 10);
+      patch('dueDate', addDaysISO(invoiceDate, days));
+    } else if (/on receipt/i.test(preset)) {
+      patch('dueDate', invoiceDate);
+    }
   }
 
   return (
@@ -140,7 +229,7 @@ export default function InvoiceGenerator() {
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Invoice Generator</h1>
-              <p className="text-sm text-white/50">Premium invoicing · UK VAT (20%)</p>
+              <p className="text-sm text-white/50">Premium invoicing · configurable tax & currency</p>
             </div>
           </div>
           <button
@@ -152,8 +241,22 @@ export default function InvoiceGenerator() {
           </button>
         </header>
 
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_minmax(360px,420px)]">
-          {/* ---------------- Left: form ---------------- */}
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[260px_1fr_minmax(360px,400px)]">
+          {/* ---------------- Left: saved invoices ---------------- */}
+          <aside className={showPreviewMobile ? 'hidden lg:block' : 'block'}>
+            <div className="sticky top-6 space-y-4">
+              <SavedInvoices
+                saved={saved}
+                activeId={invoice.id}
+                onOpen={handleOpen}
+                onDuplicate={handleDuplicate}
+                onDelete={(id) => setConfirmDelete(id)}
+                onNew={handleNew}
+              />
+            </div>
+          </aside>
+
+          {/* ---------------- Center: form ---------------- */}
           <div className={showPreviewMobile ? 'hidden lg:block' : 'block'}>
             {/* Branding */}
             <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 backdrop-blur sm:p-6">
@@ -187,10 +290,7 @@ export default function InvoiceGenerator() {
                         />
                       </label>
                       {logoDataUrl && (
-                        <button
-                          onClick={removeLogo}
-                          className="inline-flex items-center gap-1 text-xs text-white/40 transition-colors hover:text-red-400"
-                        >
+                        <button onClick={removeLogo} className="inline-flex items-center gap-1 text-xs text-white/40 transition-colors hover:text-red-400">
                           <X className="h-3 w-3" /> Remove
                         </button>
                       )}
@@ -213,7 +313,7 @@ export default function InvoiceGenerator() {
                     {ACCENT_PRESETS.map((c) => (
                       <button
                         key={c}
-                        onClick={() => setAccentColor(c)}
+                        onClick={() => patch('accentColor', c)}
                         className={`h-7 w-7 rounded-full ring-2 ring-offset-2 ring-offset-[#0a0a0b] transition-transform hover:scale-110 ${
                           accentColor.toLowerCase() === c.toLowerCase() ? 'ring-white' : 'ring-transparent'
                         }`}
@@ -222,25 +322,17 @@ export default function InvoiceGenerator() {
                       />
                     ))}
                     <label className="relative h-7 w-7 cursor-pointer overflow-hidden rounded-full border border-white/20">
-                      <span
-                        className="block h-full w-full"
-                        style={{
-                          background:
-                            'conic-gradient(from 0deg, #ef4444, #f59e0b, #10b981, #0ea5e9, #6366f1, #ef4444)',
-                        }}
-                      />
+                      <span className="block h-full w-full" style={{ background: 'conic-gradient(from 0deg, #ef4444, #f59e0b, #10b981, #0ea5e9, #6366f1, #ef4444)' }} />
                       <input
                         type="color"
                         value={accentColor}
-                        onChange={(e) => setAccentColor(e.target.value)}
+                        onChange={(e) => patch('accentColor', e.target.value)}
                         className="absolute inset-0 cursor-pointer opacity-0"
                         aria-label="Custom accent colour"
                       />
                     </label>
                   </div>
-                  <p className="mt-1.5 text-[11px] text-white/30">
-                    Appears on the invoice header, table & totals
-                  </p>
+                  <p className="mt-1.5 text-[11px] text-white/30">Appears on the invoice header, table & totals</p>
                 </div>
               </div>
             </section>
@@ -248,27 +340,61 @@ export default function InvoiceGenerator() {
             {/* Parties */}
             <section className="mt-5 grid grid-cols-1 gap-5 md:grid-cols-2">
               <Panel icon={<User className="h-4 w-4" />} title="Sender Details">
-                <Field label="Name" value={sender.name} onChange={(v) => setSender({ ...sender, name: v })} placeholder="Your business name" />
-                <Field label="Email" value={sender.email} onChange={(v) => setSender({ ...sender, email: v })} placeholder="you@company.com" />
-                <Field label="Address" value={sender.address} onChange={(v) => setSender({ ...sender, address: v })} placeholder="Street, City, Postcode" textarea />
+                <Field label="Name" value={sender.name} onChange={(v) => patchSender('name', v)} placeholder="Your business name" />
+                <Field label="Email" value={sender.email} onChange={(v) => patchSender('email', v)} placeholder="you@company.com" />
+                <Field label="Address" value={sender.address} onChange={(v) => patchSender('address', v)} placeholder="Street, City, Postcode" textarea />
               </Panel>
               <Panel icon={<Building2 className="h-4 w-4" />} title="Client Details">
-                <Field label="Name" value={client.name} onChange={(v) => setClient({ ...client, name: v })} placeholder="Client name" />
-                <Field label="Email" value={client.email} onChange={(v) => setClient({ ...client, email: v })} placeholder="client@email.com" />
-                <Field label="Address" value={client.address} onChange={(v) => setClient({ ...client, address: v })} placeholder="Street, City, Postcode" textarea />
+                <Field label="Name" value={client.name} onChange={(v) => patchClient('name', v)} placeholder="Client name" />
+                <Field label="Email" value={client.email} onChange={(v) => patchClient('email', v)} placeholder="client@email.com" />
+                <Field label="Address" value={client.address} onChange={(v) => patchClient('address', v)} placeholder="Street, City, Postcode" textarea />
               </Panel>
             </section>
 
             {/* Invoice meta */}
             <section className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
               <Panel icon={<Hash className="h-4 w-4" />} title="Invoice Number">
-                <Field label="Number" value={invoiceNumber} onChange={setInvoiceNumber} placeholder="INV-0001" />
+                <Field label="Number" value={invoiceNumber} onChange={(v) => patch('invoiceNumber', v)} placeholder="INV-0001" />
               </Panel>
-              <Panel icon={<Calendar className="h-4 w-4" />} title="Invoice Date">
-                <Field label="Date" value={invoiceDate} onChange={setInvoiceDate} placeholder="" type="date" />
+              <Panel icon={<Calendar className="h-4 w-4" />} title="Dates">
+                <Field label="Invoice Date" value={invoiceDate} onChange={(v) => patch('invoiceDate', v)} placeholder="" type="date" />
+                <Field label="Due Date" value={dueDate} onChange={(v) => patch('dueDate', v)} placeholder="" type="date" />
               </Panel>
               <Panel icon={<CreditCard className="h-4 w-4" />} title="Payment Terms">
-                <PaymentTermsField value={paymentTerms} onChange={setPaymentTerms} />
+                <PaymentTermsField value={paymentTerms} onChange={applyTermsPreset} onTextChange={(v) => patch('paymentTerms', v)} />
+              </Panel>
+            </section>
+
+            {/* Currency & Tax settings */}
+            <section className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2">
+              <Panel icon={<Coins className="h-4 w-4" />} title="Currency">
+                <label className="block">
+                  <span className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-white/40">Currency</span>
+                  <select
+                    value={currency}
+                    onChange={(e) => patch('currency', e.target.value)}
+                    className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white outline-none transition-colors focus:border-emerald-400/50 focus:bg-black/50 [color-scheme:dark]"
+                  >
+                    {CURRENCIES.map((c) => (
+                      <option key={c.code} value={c.code} className="bg-[#0a0a0b]">
+                        {c.code} — {c.symbol}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="text-[11px] text-white/30">No currency conversion is performed. Choose the currency you invoice in.</p>
+              </Panel>
+              <Panel icon={<Percent className="h-4 w-4" />} title="Tax Rate">
+                <Field
+                  label="Tax Rate (%)"
+                  value={taxRate}
+                  onChange={(v) => patch('taxRate', String(clampNonNegative(v)))}
+                  placeholder="20"
+                  type="number"
+                />
+                <p className="text-[11px] text-white/30">
+                  Default 20% UK VAT. Change to match your region. The app does not determine whether a rate is legally correct.
+                </p>
               </Panel>
             </section>
 
@@ -289,63 +415,99 @@ export default function InvoiceGenerator() {
               </div>
 
               {/* Table header (desktop) */}
-              <div className="hidden grid-cols-12 gap-3 px-2 pb-2 text-xs font-medium uppercase tracking-wider text-white/40 sm:grid">
-                <div className="col-span-6">Item Name</div>
-                <div className="col-span-2 text-center">Quantity</div>
-                <div className="col-span-2 text-right">Price (GBP)</div>
-                <div className="col-span-2 text-right">Amount</div>
+              <div className="hidden items-center gap-2 px-2 pb-2 text-xs font-medium uppercase tracking-wider text-white/40 lg:flex">
+                <div className="flex-1">Item Name</div>
+                <div className="w-16 text-center">Qty</div>
+                <div className="w-24 text-right">Price</div>
+                <div className="w-16 text-right">Disc %</div>
+                <div className="w-20 text-right">Amount</div>
+                <div className="w-8"></div>
               </div>
 
               <div className="space-y-2">
-                {items.map((it) => (
-                  <div
-                    key={it.id}
-                    className="grid grid-cols-12 items-center gap-2 rounded-xl border border-white/5 bg-black/30 p-2 transition-colors hover:border-white/10 sm:gap-3"
-                  >
-                    <div className="col-span-12 sm:col-span-6">
-                      <input
-                        value={it.name}
-                        onChange={(e) => updateItem(it.id, 'name', e.target.value)}
-                        placeholder="Item name or description"
-                        className="w-full rounded-lg bg-transparent px-2 py-2 text-sm text-white placeholder-white/30 outline-none focus:bg-white/5"
-                      />
+                {items.map((it) => {
+                  const itemDisc = parsePct(it.discountPct);
+                  const net = fromCents(lineNetCents(it));
+                  return (
+                    <div
+                      key={it.id}
+                      className="rounded-xl border border-white/5 bg-black/30 p-2 transition-colors hover:border-white/10"
+                    >
+                      {/* Row: flex layout that works on all breakpoints */}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="order-1 w-full lg:w-auto lg:flex-1">
+                          <input
+                            value={it.name}
+                            onChange={(e) => updateItem(it.id, 'name', e.target.value)}
+                            placeholder="Item name or description"
+                            className="w-full rounded-lg bg-transparent px-2 py-2 text-sm text-white placeholder-white/30 outline-none focus:bg-white/5"
+                          />
+                        </div>
+                        <div className="order-2 w-16">
+                          <input
+                            value={it.quantity}
+                            onChange={(e) => updateItem(it.id, 'quantity', e.target.value)}
+                            type="number"
+                            min="0"
+                            step="any"
+                            placeholder="1"
+                            className="w-full rounded-lg bg-transparent px-2 py-2 text-center text-sm text-white placeholder-white/30 outline-none focus:bg-white/5"
+                          />
+                        </div>
+                        <div className="order-3 w-24">
+                          <input
+                            value={it.price}
+                            onChange={(e) => updateItem(it.id, 'price', e.target.value)}
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            placeholder="0.00"
+                            className="w-full rounded-lg bg-transparent px-2 py-2 text-right text-sm text-white placeholder-white/30 outline-none focus:bg-white/5"
+                          />
+                        </div>
+                        <div className="order-4 w-16">
+                          <input
+                            value={it.discountPct}
+                            onChange={(e) => updateItem(it.id, 'discountPct', String(clampPct(parseFloat(e.target.value) || 0)))}
+                            type="number"
+                            min="0"
+                            max="100"
+                            placeholder="0"
+                            className="w-full rounded-lg bg-transparent px-2 py-2 text-right text-sm text-white placeholder-white/30 outline-none focus:bg-white/5"
+                          />
+                        </div>
+                        <div className="order-5 w-20 flex items-center justify-end text-sm font-medium text-white/70">
+                          {money(net)}
+                        </div>
+                        <div className="order-6 w-8 flex justify-end">
+                          <button
+                            onClick={() => removeItem(it.id)}
+                            disabled={items.length === 1}
+                            className="rounded-lg p-2 text-white/30 transition-colors hover:bg-red-500/10 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-20"
+                            aria-label="Remove item"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                      {/* Row 2: tax-exempt toggle */}
+                      <div className="mt-1 flex items-center gap-3 px-2">
+                        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-white/50">
+                          <input
+                            type="checkbox"
+                            checked={it.taxExempt}
+                            onChange={(e) => updateItem(it.id, 'taxExempt', e.target.checked)}
+                            className="h-3.5 w-3.5 accent-emerald-400"
+                          />
+                          Tax-exempt
+                        </label>
+                        {itemDisc > 0 && (
+                          <span className="text-xs text-white/30">{itemDisc}% item discount applied</span>
+                        )}
+                      </div>
                     </div>
-                    <div className="col-span-4 sm:col-span-2">
-                      <input
-                        value={it.quantity}
-                        onChange={(e) => updateItem(it.id, 'quantity', e.target.value)}
-                        type="number"
-                        min="0"
-                        placeholder="1"
-                        className="w-full rounded-lg bg-transparent px-2 py-2 text-center text-sm text-white placeholder-white/30 outline-none focus:bg-white/5"
-                      />
-                    </div>
-                    <div className="col-span-4 sm:col-span-2">
-                      <input
-                        value={it.price}
-                        onChange={(e) => updateItem(it.id, 'price', e.target.value)}
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        placeholder="0.00"
-                        className="w-full rounded-lg bg-transparent px-2 py-2 text-right text-sm text-white placeholder-white/30 outline-none focus:bg-white/5"
-                      />
-                    </div>
-                    <div className="col-span-3 flex items-center justify-end text-sm font-medium text-white/70 sm:col-span-2">
-                      {formatGBP(lineTotal(it))}
-                    </div>
-                    <div className="col-span-1 flex justify-end">
-                      <button
-                        onClick={() => removeItem(it.id)}
-                        disabled={items.length === 1}
-                        className="rounded-lg p-2 text-white/30 transition-colors hover:bg-red-500/10 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-20"
-                        aria-label="Remove item"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               {items.length === 0 && (
@@ -353,16 +515,17 @@ export default function InvoiceGenerator() {
               )}
             </section>
 
-            {/* Discount + Totals */}
+            {/* Invoice-level discount + Totals */}
             <section className="mt-5 grid grid-cols-1 gap-5 md:grid-cols-[200px_1fr]">
-              <Panel icon={<Calculator className="h-4 w-4" />} title="Discount">
+              <Panel icon={<Calculator className="h-4 w-4" />} title="Invoice Discount">
                 <Field
                   label="Discount %"
                   value={discountPct}
-                  onChange={(v) => setDiscountPct(String(clampPct(parseFloat(v) || 0)))}
+                  onChange={(v) => patch('discountPct', String(clampPct(parseFloat(v) || 0)))}
                   placeholder="0"
                   type="number"
                 />
+                <p className="text-[11px] text-white/30">Applied to the subtotal before tax.</p>
               </Panel>
               <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 backdrop-blur sm:p-6">
                 <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-white/80">
@@ -370,27 +533,27 @@ export default function InvoiceGenerator() {
                   Summary
                 </div>
                 <div className="ml-auto max-w-sm space-y-3">
-                  <Row label="Subtotal" value={formatGBP(calc.subtotal)} />
+                  <Row label="Subtotal" value={money(calc.subtotal)} />
                   {calc.discountAmount > 0 && (
-                    <Row label={`Discount (${discountPct || 0}%)`} value={'-' + formatGBP(calc.discountAmount)} muted />
+                    <Row label={`Invoice Discount (${discountPct || 0}%)`} value={'-' + money(calc.discountAmount)} muted />
                   )}
-                  <Row label="VAT (20%)" value={formatGBP(calc.vat)} muted />
+                  <Row label={`Tax (${taxRate || 0}%)`} value={money(calc.tax)} muted />
                   <div className="h-px bg-white/10" />
                   <div
                     className="flex items-center justify-between rounded-xl px-4 py-3.5"
                     style={{ backgroundColor: accentColor, color: readableTextOn(accentColor) }}
                   >
                     <span className="text-base font-semibold tracking-tight">Total Due</span>
-                    <span className="text-2xl font-bold tracking-tight">{formatGBP(calc.total)}</span>
+                    <span className="text-2xl font-bold tracking-tight">{money(calc.total)}</span>
                   </div>
                 </div>
               </div>
             </section>
 
-            {/* Validation + Download */}
-            <div className="mt-6">
+            {/* Actions */}
+            <div className="mt-6 space-y-4">
               {validation.length > 0 && (
-                <div className="mb-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-4">
+                <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 p-4">
                   <p className="mb-1.5 flex items-center gap-1.5 text-sm font-medium text-amber-300">
                     <AlertCircle className="h-4 w-4" /> Please fix before downloading:
                   </p>
@@ -399,20 +562,28 @@ export default function InvoiceGenerator() {
                   </ul>
                 </div>
               )}
-              <div className="flex justify-center">
+              <div className="flex flex-col gap-3 sm:flex-row sm:justify-center">
+                <button
+                  onClick={handleSave}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-6 py-4 text-base font-semibold text-white transition-all hover:bg-white/10 active:scale-[0.98] sm:px-8"
+                >
+                  {savedFlash ? <Check className="h-5 w-5 text-emerald-400" /> : <Save className="h-5 w-5" />}
+                  {savedFlash ? 'Saved!' : 'Save Draft'}
+                </button>
                 <button
                   onClick={downloadPDF}
                   disabled={validation.length > 0}
-                  className="group inline-flex w-full items-center justify-center gap-2 rounded-xl bg-white px-6 py-4 text-base font-semibold text-black shadow-xl shadow-white/10 transition-all hover:scale-[1.01] hover:shadow-white/20 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100 sm:w-auto sm:px-10"
+                  className="group inline-flex items-center justify-center gap-2 rounded-xl bg-white px-6 py-4 text-base font-semibold text-black shadow-xl shadow-white/10 transition-all hover:scale-[1.01] hover:shadow-white/20 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100 sm:px-10"
                 >
                   {downloaded ? <Check className="h-5 w-5 text-emerald-600" /> : <Download className="h-5 w-5 transition-transform group-hover:translate-y-0.5" />}
                   {downloaded ? 'Downloaded!' : 'Download Invoice PDF'}
                 </button>
               </div>
               {downloaded && (
-                <p className="mt-3 text-center text-sm text-emerald-300">
-                  Your invoice has been downloaded. Check your downloads folder.
-                </p>
+                <p className="text-center text-sm text-emerald-300">Your invoice has been downloaded. Check your downloads folder.</p>
+              )}
+              {savedFlash && (
+                <p className="text-center text-sm text-emerald-300">Draft saved to this browser.</p>
               )}
             </div>
           </div>
@@ -432,11 +603,26 @@ export default function InvoiceGenerator() {
         </div>
 
         <footer className="mt-10 text-center text-xs text-white/30">
-          Built for UK businesses · 20% VAT included
+          Built for UK businesses · 20% VAT default · configurable tax & currency
         </footer>
       </div>
+
+      {/* Delete confirmation */}
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        title="Delete this invoice?"
+        message="This permanently removes the saved draft from your browser. This action cannot be undone."
+        confirmLabel="Delete"
+        onConfirm={() => confirmDelete && handleDelete(confirmDelete)}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   );
+}
+
+function clampNonNegative(v: string): number {
+  const n = parseFloat(v) || 0;
+  return isNaN(n) || n < 0 ? 0 : n;
 }
 
 function Panel({
@@ -501,9 +687,11 @@ function Field({
 function PaymentTermsField({
   value,
   onChange,
+  onTextChange,
 }: {
   value: string;
   onChange: (v: string) => void;
+  onTextChange: (v: string) => void;
 }) {
   const presets = [
     'Payment due within 7 days. Thank you for your business.',
@@ -528,13 +716,11 @@ function PaymentTermsField({
             {p.replace('. Thank you for your business.', '')}
           </option>
         ))}
-        <option value="__custom" className="bg-[#0a0a0b]">
-          Custom text...
-        </option>
+        <option value="__custom" className="bg-[#0a0a0b]">Custom text...</option>
       </select>
       <textarea
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => onTextChange(e.target.value)}
         placeholder="Enter custom payment terms..."
         rows={2}
         className="mt-2 w-full resize-none rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white placeholder-white/25 outline-none transition-colors focus:border-emerald-400/50 focus:bg-black/50"
