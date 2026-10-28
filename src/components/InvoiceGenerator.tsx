@@ -330,7 +330,12 @@ export default function InvoiceGenerator() {
                         aria-label={`Accent ${c}`}
                       />
                     ))}
-                    <label className="relative h-7 w-7 cursor-pointer overflow-hidden rounded-full border border-white/20">
+                    <label
+                      className={`relative h-7 w-7 cursor-pointer overflow-hidden rounded-full ring-2 ring-offset-2 ring-offset-[#0a0a0b] transition-transform hover:scale-110 ${
+                        !ACCENT_PRESETS.some((c) => c.toLowerCase() === accentColor.toLowerCase()) ? 'ring-white' : 'ring-transparent'
+                      }`}
+                      style={{ border: '1px solid rgba(255,255,255,0.2)' }}
+                    >
                       <span className="block h-full w-full" style={{ background: 'conic-gradient(from 0deg, #ef4444, #f59e0b, #10b981, #0ea5e9, #6366f1, #ef4444)' }} />
                       <input
                         type="color"
